@@ -1,0 +1,82 @@
+name: Daily CSP PDF Email
+
+on:
+  schedule:
+    # GitHub Actions cron uses UTC. 06:05 UTC = 14:05 Asia/Shanghai.
+    - cron: "5 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  send-daily-csp-pdf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      CSP_SMTP_PASSWORD: ${{ secrets.CSP_SMTP_PASSWORD }}
+      CSP_SMTP_HOST: ${{ secrets.CSP_SMTP_HOST || 'smtp.qq.com' }}
+      CSP_SMTP_PORT: ${{ secrets.CSP_SMTP_PORT || '465' }}
+      CSP_SMTP_USER: ${{ secrets.CSP_SMTP_USER }}
+      CSP_MAIL_FROM: ${{ secrets.CSP_MAIL_FROM }}
+      CSP_MAIL_TO: ${{ secrets.CSP_MAIL_TO }}
+      CSP_SUBJECT_PREFIX: ${{ secrets.CSP_SUBJECT_PREFIX || 'CSP 每日训练' }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Validate required secrets
+        shell: bash
+        run: |
+          missing=0
+          for name in CSP_SMTP_PASSWORD CSP_SMTP_USER CSP_MAIL_FROM CSP_MAIL_TO; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing GitHub secret: $name"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Create cloud config
+        shell: bash
+        run: |
+          cat > config.cloud.ini <<EOF
+          [app]
+          title = CSP 每日三题训练
+          provider = static
+
+          [paths]
+          questions_file = data/questions.json
+          output_dir = output
+          filename_prefix = CSP训练
+
+          [email]
+          enabled = true
+          smtp_host = ${CSP_SMTP_HOST}
+          smtp_port = ${CSP_SMTP_PORT}
+          use_ssl = true
+          use_starttls = false
+          username = ${CSP_SMTP_USER}
+          password_env = CSP_SMTP_PASSWORD
+          from_addr = ${CSP_MAIL_FROM}
+          to_addrs = ${CSP_MAIL_TO}
+          subject_prefix = ${CSP_SUBJECT_PREFIX}
+          EOF
+
+      - name: Generate PDF and send email
+        run: python main.py --config config.cloud.ini --require-email
+
+      - name: Upload generated PDF artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: csp-daily-pdf
+          path: output/*.pdf
+          if-no-files-found: ignore

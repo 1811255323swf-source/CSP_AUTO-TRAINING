@@ -1,0 +1,2 @@
+"""CSP daily training package."""
+
