@@ -13,23 +13,28 @@ def _build_message(
     pdf_path: Path,
     training_date: date,
     title: str,
+    source_label: str = "",
+    source: str = "",
 ) -> EmailMessage:
     message = EmailMessage()
-    message["Subject"] = f"{email_config.subject_prefix} {training_date.isoformat()}"
+    subject = f"{email_config.subject_prefix} {training_date.isoformat()}"
+    if source:
+        subject += "（AI）" if source == "ai" else "（题库）"
+    message["Subject"] = subject
     message["From"] = email_config.from_addr
     message["To"] = ", ".join(email_config.to_addrs)
-    message.set_content(
-        "\n".join(
-            [
-                f"{title} 已生成。",
-                "",
-                f"训练日期：{training_date.isoformat()}",
-                "附件中包含今天的 3 道 CSP 风格 C++ 训练题。",
-                "",
-                "祝你今天训练顺利。",
-            ]
-        )
-    )
+
+    body = [
+        f"{title} 已生成。",
+        "",
+        f"训练日期：{training_date.isoformat()}",
+        "附件中包含今天的 3 道 CSP 风格 C++ 训练题。",
+    ]
+    if source_label:
+        body.append(f"出题来源：{source_label}")
+    body += ["", "祝你今天训练顺利。"]
+
+    message.set_content("\n".join(body))
 
     data = pdf_path.read_bytes()
     message.add_attachment(
@@ -46,6 +51,8 @@ def send_pdf_email(
     pdf_path: Path,
     training_date: date,
     title: str,
+    source_label: str = "",
+    source: str = "",
 ) -> None:
     if not pdf_path.exists():
         raise FileNotFoundError(f"PDF does not exist: {pdf_path}")
@@ -67,7 +74,9 @@ def send_pdf_email(
     if missing:
         raise RuntimeError("Missing email configuration: " + ", ".join(missing))
 
-    message = _build_message(email_config, pdf_path, training_date, title)
+    message = _build_message(
+        email_config, pdf_path, training_date, title, source_label, source
+    )
 
     if email_config.use_ssl:
         with smtplib.SMTP_SSL(email_config.smtp_host, email_config.smtp_port) as server:

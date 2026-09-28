@@ -297,14 +297,18 @@ def generate_daily_pdf(
     output_path: Path,
     training_date: date,
     title: str,
+    source_label: str = "",
 ) -> Path:
     if len(questions) != 3:
         raise ValueError("Daily training PDF expects exactly three questions.")
 
     pdf = SimpleChinesePdf()
     pdf.add_centered(title, size=20.0, leading=27.0, space_after=2.0)
+    subtitle = f"训练日期：{training_date.isoformat()} | 语言：C++"
+    if source_label:
+        subtitle += f" | 出题来源：{source_label}"
     pdf.add_centered(
-        f"训练日期：{training_date.isoformat()} | 语言：C++",
+        subtitle,
         size=10.5,
         leading=16.0,
         space_after=10.0,

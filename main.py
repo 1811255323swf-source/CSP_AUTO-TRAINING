@@ -97,9 +97,10 @@ def resolve_questions(
         return static_provider(config).get_daily_questions(training_date), True
 
 
-def build_output_path(config: AppConfig, training_date: date) -> Path:
+def build_output_path(config: AppConfig, training_date: date, source: str = "static") -> Path:
     output_dir = config.project_root / config.paths.output_dir
-    filename = f"{config.paths.filename_prefix}_{training_date.isoformat()}.pdf"
+    suffix = "_AI" if source == "ai" else ""
+    filename = f"{config.paths.filename_prefix}_{training_date.isoformat()}{suffix}.pdf"
     return output_dir / filename
 
 
@@ -124,16 +125,26 @@ def main() -> int:
         print(f"[questions] Failed to build today's question set: {exc}")
         return 1
 
-    source = "static" if used_fallback else config.app.provider
+    if used_fallback:
+        source = "static"
+        source_label = "本地题库（AI 出题失败后回退）"
+    elif config.app.provider == "ai":
+        source = "ai"
+        source_label = f"AI 生成（{config.ai.model}）"
+    else:
+        source = "static"
+        source_label = "本地题库"
+
     print(f"[questions] Source: {source} ({len(questions)} questions).")
 
     try:
-        output_path = build_output_path(config, training_date)
+        output_path = build_output_path(config, training_date, source)
         generate_daily_pdf(
             questions=questions,
             output_path=output_path,
             training_date=training_date,
             title=config.app.title,
+            source_label=source_label,
         )
     except Exception as exc:
         print(f"[pdf] Generation failed: {exc}")
@@ -158,6 +169,8 @@ def main() -> int:
                 pdf_path=output_path,
                 training_date=training_date,
                 title=config.app.title,
+                source_label=source_label,
+                source=source,
             )
         except Exception as exc:
             print(f"[email] Send failed: {exc}")
