@@ -1,3 +1,2 @@
-# No third-party packages are required for the stable first version.
-# The PDF generator uses only the Python standard library.
-
+# AI API client
+openai

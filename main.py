@@ -8,6 +8,7 @@ from csp_trainer.config import AppConfig, ConfigurationError, load_config
 from csp_trainer.mailer import send_pdf_email
 from csp_trainer.pdf_generator import generate_daily_pdf
 from csp_trainer.question_provider import StaticQuestionProvider
+from csp_trainer.ai_question_provider import AIQuestionProvider
 
 
 def parse_args() -> argparse.Namespace:
@@ -66,8 +67,22 @@ def main() -> int:
         print(f"[config] {exc}")
         return 2
 
+if config.app.provider == "ai":
+
+    provider = AIQuestionProvider()
+
+    questions = provider.get_daily_questions(
+        training_date
+    )
+
+else:
+
     provider = StaticQuestionProvider(
         questions_file=config.project_root / config.paths.questions_file
+    )
+
+    questions = provider.get_daily_questions(
+        training_date
     )
     questions = provider.get_daily_questions(training_date)
 

@@ -18,6 +18,7 @@ jobs:
       CSP_SMTP_USER: ${{ secrets.CSP_SMTP_USER }}
       CSP_MAIL_FROM: ${{ secrets.CSP_MAIL_FROM }}
       CSP_MAIL_TO: ${{ secrets.CSP_MAIL_TO }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       CSP_SUBJECT_PREFIX: ${{ secrets.CSP_SUBJECT_PREFIX || 'CSP 每日训练' }}
 
     steps:
