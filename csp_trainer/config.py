@@ -10,10 +10,29 @@ class ConfigurationError(RuntimeError):
     """Raised when the local configuration is missing or invalid."""
 
 
+VALID_PROVIDERS = ("static", "ai")
+
+
 @dataclass(frozen=True)
 class AppSection:
     title: str
     provider: str
+
+
+@dataclass(frozen=True)
+class AISection:
+    api_key_env: str
+    base_url: str
+    model: str
+    timeout: float
+    max_retries: int
+    temperature: float
+    fallback_to_static: bool
+
+    @property
+    def api_key(self) -> str | None:
+        value = os.getenv(self.api_key_env, "")
+        return value.strip() or None
 
 
 @dataclass(frozen=True)
@@ -47,6 +66,7 @@ class AppConfig:
     app: AppSection
     paths: PathsSection
     email: EmailSection
+    ai: AISection
 
 
 def _get_bool(
@@ -92,9 +112,9 @@ def load_config(config_path: str | Path) -> AppConfig:
         title=parser.get("app", "title", fallback="CSP 每日三题训练"),
         provider=parser.get("app", "provider", fallback="static"),
     )
-    if app.provider != "static":
+    if app.provider not in VALID_PROVIDERS:
         raise ConfigurationError(
-            "Only provider=static is implemented in this stable first version."
+            f"app.provider must be one of {', '.join(VALID_PROVIDERS)}, got '{app.provider}'."
         )
 
     paths = PathsSection(
@@ -138,11 +158,60 @@ def load_config(config_path: str | Path) -> AppConfig:
                 parser.get("email", "to_addrs", fallback=""),
             )
         ),
-        subject_prefix=parser.get("email", "subject_prefix", fallback="CSP 每日训练"),
+        subject_prefix=_env_override(
+            "CSP_SUBJECT_PREFIX",
+            parser.get("email", "subject_prefix", fallback="CSP 每日训练"),
+        ),
     )
 
     if email.use_ssl and email.use_starttls:
         raise ConfigurationError("email.use_ssl and email.use_starttls cannot both be true.")
 
-    return AppConfig(project_root=project_root, app=app, paths=paths, email=email)
+    ai_timeout_raw = _env_override(
+        "CSP_AI_TIMEOUT",
+        parser.get("ai", "timeout", fallback="60"),
+    )
+    ai_retries_raw = _env_override(
+        "CSP_AI_MAX_RETRIES",
+        parser.get("ai", "max_retries", fallback="2"),
+    )
+    ai_temperature_raw = _env_override(
+        "CSP_AI_TEMPERATURE",
+        parser.get("ai", "temperature", fallback="1.0"),
+    )
+    try:
+        ai_timeout = float(ai_timeout_raw)
+        ai_retries = int(ai_retries_raw)
+        ai_temperature = float(ai_temperature_raw)
+    except ValueError as exc:
+        raise ConfigurationError(
+            "ai.timeout / ai.max_retries / ai.temperature must be numeric."
+        ) from exc
+
+    if ai_timeout <= 0:
+        raise ConfigurationError("ai.timeout must be greater than 0.")
+    if ai_retries < 0:
+        raise ConfigurationError("ai.max_retries cannot be negative.")
+    if not 0.0 <= ai_temperature <= 2.0:
+        raise ConfigurationError("ai.temperature must be between 0.0 and 2.0.")
+
+    ai = AISection(
+        api_key_env=parser.get("ai", "api_key_env", fallback="DEEPSEEK_API_KEY"),
+        base_url=_env_override(
+            "CSP_AI_BASE_URL",
+            parser.get("ai", "base_url", fallback="https://api.deepseek.com"),
+        ),
+        model=_env_override(
+            "CSP_AI_MODEL",
+            parser.get("ai", "model", fallback="deepseek-chat"),
+        ),
+        timeout=ai_timeout,
+        max_retries=ai_retries,
+        temperature=ai_temperature,
+        fallback_to_static=_get_bool(parser, "ai", "fallback_to_static", fallback=False),
+    )
+
+    return AppConfig(
+        project_root=project_root, app=app, paths=paths, email=email, ai=ai
+    )
 

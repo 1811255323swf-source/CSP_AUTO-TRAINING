@@ -4,11 +4,11 @@ import argparse
 from datetime import date, datetime
 from pathlib import Path
 
+from csp_trainer.ai_question_provider import AIQuestionProvider
 from csp_trainer.config import AppConfig, ConfigurationError, load_config
 from csp_trainer.mailer import send_pdf_email
 from csp_trainer.pdf_generator import generate_daily_pdf
-from csp_trainer.question_provider import StaticQuestionProvider
-from csp_trainer.ai_question_provider import AIQuestionProvider
+from csp_trainer.question_provider import QuestionProvider, StaticQuestionProvider
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,6 +39,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Fail if the email is not sent. Intended for daily scheduled runs.",
     )
+    parser.add_argument(
+        "--allow-static-fallback",
+        action="store_true",
+        help="When the AI provider fails, fall back to the local question bank "
+        "instead of aborting the run.",
+    )
     return parser.parse_args()
 
 
@@ -49,6 +55,46 @@ def parse_training_date(value: str | None) -> date:
         return datetime.strptime(value, "%Y-%m-%d").date()
     except ValueError as exc:
         raise SystemExit("--date must use YYYY-MM-DD format.") from exc
+
+
+def static_provider(config: AppConfig) -> StaticQuestionProvider:
+    return StaticQuestionProvider(
+        questions_file=config.project_root / config.paths.questions_file
+    )
+
+
+def build_provider(config: AppConfig, args: argparse.Namespace) -> tuple[QuestionProvider, bool]:
+    """Pick the question source declared in config. Returns (provider, used_fallback)."""
+    if config.app.provider != "ai":
+        return static_provider(config), False
+
+    try:
+        return AIQuestionProvider(config=config.ai), False
+    except ConfigurationError as exc:
+        if not args.allow_static_fallback or not config.ai.fallback_to_static:
+            raise
+        print(f"[ai] {exc}")
+        print("[ai] Falling back to the static question bank.")
+        return static_provider(config), True
+
+
+def resolve_questions(
+    provider: QuestionProvider,
+    config: AppConfig,
+    training_date: date,
+    args: argparse.Namespace,
+) -> tuple[list, bool]:
+    """Return (questions, used_fallback)."""
+    try:
+        return provider.get_daily_questions(training_date), False
+    except Exception as exc:
+        if not isinstance(provider, AIQuestionProvider):
+            raise
+        if not args.allow_static_fallback or not config.ai.fallback_to_static:
+            raise
+        print(f"[ai] Generation failed: {exc}")
+        print("[ai] Falling back to the static question bank.")
+        return static_provider(config).get_daily_questions(training_date), True
 
 
 def build_output_path(config: AppConfig, training_date: date) -> Path:
@@ -67,32 +113,31 @@ def main() -> int:
         print(f"[config] {exc}")
         return 2
 
-if config.app.provider == "ai":
+    try:
+        provider, used_fallback = build_provider(config, args)
+        questions, fell_back = resolve_questions(provider, config, training_date, args)
+        used_fallback = used_fallback or fell_back
+    except ConfigurationError as exc:
+        print(f"[config] {exc}")
+        return 2
+    except Exception as exc:
+        print(f"[questions] Failed to build today's question set: {exc}")
+        return 1
 
-    provider = AIQuestionProvider()
+    source = "static" if used_fallback else config.app.provider
+    print(f"[questions] Source: {source} ({len(questions)} questions).")
 
-    questions = provider.get_daily_questions(
-        training_date
-    )
-
-else:
-
-    provider = StaticQuestionProvider(
-        questions_file=config.project_root / config.paths.questions_file
-    )
-
-    questions = provider.get_daily_questions(
-        training_date
-    )
-    questions = provider.get_daily_questions(training_date)
-
-    output_path = build_output_path(config, training_date)
-    generate_daily_pdf(
-        questions=questions,
-        output_path=output_path,
-        training_date=training_date,
-        title=config.app.title,
-    )
+    try:
+        output_path = build_output_path(config, training_date)
+        generate_daily_pdf(
+            questions=questions,
+            output_path=output_path,
+            training_date=training_date,
+            title=config.app.title,
+        )
+    except Exception as exc:
+        print(f"[pdf] Generation failed: {exc}")
+        return 1
 
     print(f"[pdf] Generated: {output_path}")
 
@@ -103,7 +148,6 @@ else:
 
     if args.require_email and not config.email.enabled:
         print("[email] Email is required for this run, but email.enabled is false.")
-        print("[email] Run scripts/setup_email.ps1 first, then try again.")
         return 2
 
     should_send = config.email.enabled and not skip_requested
