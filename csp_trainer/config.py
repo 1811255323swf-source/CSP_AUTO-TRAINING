@@ -26,7 +26,9 @@ class AISection:
     model: str
     timeout: float
     max_retries: int
+    max_tokens: int
     temperature: float
+    thinking: bool
     fallback_to_static: bool
 
     @property
@@ -179,13 +181,18 @@ def load_config(config_path: str | Path) -> AppConfig:
         "CSP_AI_TEMPERATURE",
         parser.get("ai", "temperature", fallback="1.0"),
     )
+    ai_max_tokens_raw = _env_override(
+        "CSP_AI_MAX_TOKENS",
+        parser.get("ai", "max_tokens", fallback="8192"),
+    )
     try:
         ai_timeout = float(ai_timeout_raw)
         ai_retries = int(ai_retries_raw)
         ai_temperature = float(ai_temperature_raw)
+        ai_max_tokens = int(ai_max_tokens_raw)
     except ValueError as exc:
         raise ConfigurationError(
-            "ai.timeout / ai.max_retries / ai.temperature must be numeric."
+            "ai.timeout / ai.max_retries / ai.temperature / ai.max_tokens must be numeric."
         ) from exc
 
     if ai_timeout <= 0:
@@ -194,6 +201,8 @@ def load_config(config_path: str | Path) -> AppConfig:
         raise ConfigurationError("ai.max_retries cannot be negative.")
     if not 0.0 <= ai_temperature <= 2.0:
         raise ConfigurationError("ai.temperature must be between 0.0 and 2.0.")
+    if ai_max_tokens <= 0:
+        raise ConfigurationError("ai.max_tokens must be greater than 0.")
 
     ai = AISection(
         api_key_env=parser.get("ai", "api_key_env", fallback="DEEPSEEK_API_KEY"),
@@ -203,11 +212,13 @@ def load_config(config_path: str | Path) -> AppConfig:
         ),
         model=_env_override(
             "CSP_AI_MODEL",
-            parser.get("ai", "model", fallback="deepseek-chat"),
+            parser.get("ai", "model", fallback="deepseek-flash"),
         ),
         timeout=ai_timeout,
         max_retries=ai_retries,
+        max_tokens=ai_max_tokens,
         temperature=ai_temperature,
+        thinking=_get_bool(parser, "ai", "thinking", fallback=False),
         fallback_to_static=_get_bool(parser, "ai", "fallback_to_static", fallback=False),
     )
 

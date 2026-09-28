@@ -35,22 +35,32 @@ class _FakeResponse:
         self.choices = [_FakeChoice(content)]
 
 
+class _BadRequest(Exception):
+    """Stands in for openai.BadRequestError."""
+
+    status_code = 400
+
+
 class _FakeCompletions:
-    def __init__(self, script: list[str]) -> None:
+    def __init__(self, script: list[str], reject: tuple[str, ...] = ()) -> None:
         self.script = list(script)
         self.calls = 0
         self.kwargs_seen: list[dict] = []
+        self.reject = reject
 
     def create(self, **kwargs):
         self.calls += 1
         self.kwargs_seen.append(kwargs)
+        for key in self.reject:
+            if key in kwargs:
+                raise _BadRequest(f"Unsupported parameter: {key}")
         return _FakeResponse(self.script.pop(0))
 
 
 class _FakeClient:
-    def __init__(self, script: list[str]) -> None:
+    def __init__(self, script: list[str], reject: tuple[str, ...] = ()) -> None:
         self.chat = self
-        self.completions = _FakeCompletions(script)
+        self.completions = _FakeCompletions(script, reject)
 
 
 def _valid_payload() -> str:
@@ -186,16 +196,64 @@ def _check_provider_exhausts_retries() -> None:
     raise AssertionError("expected RuntimeError")
 
 
+def _check_request_parameters() -> None:
+    """Non-thinking mode must send max_tokens, JSON output and thinking=disabled."""
+    provider = AIQuestionProvider(api_key="test-key", max_tokens=8192, thinking=False)
+    provider.client = _FakeClient([_valid_payload()])
+    provider.get_daily_questions(date(2026, 9, 28))
+
+    sent = provider.client.completions.kwargs_seen[0]
+    assert sent["max_tokens"] == 8192, sent
+    assert sent["response_format"] == {"type": "json_object"}, sent
+    assert sent["extra_body"] == {"thinking": {"type": "disabled"}}, sent
+    assert sent["model"] == "deepseek-flash", sent
+    assert "temperature" in sent, "temperature must be sent in non-thinking mode"
+    assert "reasoning_effort" not in sent, sent
+    print("ok  request: non-thinking mode sends max_tokens + json_object + thinking=disabled")
+
+
+def _check_thinking_mode_parameters() -> None:
+    """Thinking mode must not send temperature (server ignores it) but set effort."""
+    provider = AIQuestionProvider(api_key="test-key", thinking=True)
+    provider.client = _FakeClient([_valid_payload()])
+    provider.get_daily_questions(date(2026, 9, 28))
+
+    sent = provider.client.completions.kwargs_seen[0]
+    assert sent["extra_body"] == {"thinking": {"type": "enabled"}}, sent
+    assert sent["reasoning_effort"] == "high", sent
+    assert "temperature" not in sent, "temperature is ignored in thinking mode"
+    print("ok  request: thinking mode sets effort and omits temperature")
+
+
+def _check_param_downgrade() -> None:
+    """An endpoint rejecting response_format/extra_body must be retried without them."""
+    provider = AIQuestionProvider(api_key="test-key")
+    provider.client = _FakeClient(
+        [_valid_payload()], reject=("response_format", "extra_body", "max_tokens")
+    )
+    questions = provider.get_daily_questions(date(2026, 9, 28))
+
+    assert len(questions) == 3
+    assert provider.client.completions.calls == 2, provider.client.completions.calls
+    fallback_kwargs = provider.client.completions.kwargs_seen[1]
+    assert "response_format" not in fallback_kwargs
+    assert "extra_body" not in fallback_kwargs
+    assert "max_tokens" not in fallback_kwargs
+    print("ok  request: downgrades to plain parameters when the endpoint rejects extensions")
+
+
 def _check_missing_api_key() -> None:
     from csp_trainer.config import AISection, ConfigurationError
 
     section = AISection(
         api_key_env="CSP_TEST_MISSING_KEY",
         base_url="https://api.deepseek.com",
-        model="deepseek-chat",
+        model="deepseek-flash",
         timeout=60.0,
         max_retries=2,
+        max_tokens=8192,
         temperature=1.0,
+        thinking=False,
         fallback_to_static=False,
     )
     try:
@@ -216,6 +274,9 @@ def main() -> int:
     _check_two_questions_rejected()
     _check_provider_retry_then_success()
     _check_provider_exhausts_retries()
+    _check_request_parameters()
+    _check_thinking_mode_parameters()
+    _check_param_downgrade()
     _check_missing_api_key()
     print("\nAll AI provider checks passed.")
     return 0

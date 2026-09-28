@@ -9,7 +9,10 @@ from csp_trainer.config import AISection, ConfigurationError
 from csp_trainer.models import Question, Sample
 
 DEFAULT_BASE_URL = "https://api.deepseek.com"
-DEFAULT_MODEL = "deepseek-chat"
+# deepseek-chat / deepseek-reasoner were retired on 2026-07-24.
+DEFAULT_MODEL = "deepseek-flash"
+# 3 full CSP statements in one JSON payload need room; truncation breaks parsing.
+DEFAULT_MAX_TOKENS = 8192
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 _SECTION_RE = re.compile(r"^\s*【\s*([^】]+?)\s*】\s*[:：]?\s*(.*)$")
@@ -275,7 +278,9 @@ class AIQuestionProvider:
         model: str = DEFAULT_MODEL,
         timeout: float = 60.0,
         max_retries: int = 2,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
         temperature: float = 1.0,
+        thinking: bool = False,
     ) -> None:
         if config is not None:
             resolved_key = api_key or config.api_key
@@ -283,7 +288,9 @@ class AIQuestionProvider:
             model = config.model or model
             timeout = config.timeout
             max_retries = config.max_retries
+            max_tokens = config.max_tokens
             temperature = config.temperature
+            thinking = config.thinking
         else:
             resolved_key = api_key
 
@@ -305,6 +312,8 @@ class AIQuestionProvider:
         self.timeout = timeout
         self.temperature = temperature
         self.max_retries = max_retries
+        self.max_tokens = max_tokens
+        self.thinking = thinking
         self.client = OpenAI(
             api_key=resolved_key,
             base_url=base_url or DEFAULT_BASE_URL,
@@ -332,39 +341,73 @@ class AIQuestionProvider:
             f"AI question generation failed after {self.max_retries + 1} attempt(s): {last_error}"
         ) from last_error
 
+    @staticmethod
+    def _is_param_error(exc: Exception) -> bool:
+        """True when the endpoint rejected an optional/extended parameter."""
+        if getattr(exc, "status_code", None) == 400:
+            return True
+        text = str(exc).lower()
+        return any(
+            key in text
+            for key in (
+                "response_format",
+                "reasoning_effort",
+                "extra_body",
+                "thinking",
+                "max_tokens",
+                "unexpected keyword",
+                "unknown parameter",
+                "unsupported",
+            )
+        )
+
     def _chat(self, prompt: str, attempt: int) -> str:
-        kwargs: dict[str, Any] = {
-            "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": self.temperature,
-            "timeout": self.timeout,
-        }
+        messages: list[dict[str, str]] = [{"role": "user", "content": prompt}]
+        temperature = self.temperature
         if attempt > 0:
             # Nudge towards strict JSON after a parse failure.
-            kwargs["messages"] = [
-                {"role": "user", "content": prompt},
+            messages.append(
                 {
                     "role": "assistant",
                     "content": "I will answer with a single valid JSON object only.",
-                },
-            ]
-            kwargs["temperature"] = min(self.temperature, 0.3)
-
-        try:
-            response = self.client.chat.completions.create(
-                response_format={"type": "json_object"},
-                **kwargs,
+                }
             )
-        except TypeError:
-            # Some compatible endpoints do not support response_format.
-            response = self.client.chat.completions.create(**kwargs)
-        except Exception as exc:
-            if "response_format" in str(exc).lower():
-                response = self.client.chat.completions.create(**kwargs)
-            else:
-                raise
+            temperature = min(self.temperature, 0.3)
 
-        content = response.choices[0].message.content
-        if not content:
-            raise ValueError("The AI provider returned an empty message.")
-        return content
+        # Plain parameters every OpenAI-compatible endpoint understands.
+        base: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "timeout": self.timeout,
+        }
+        if not self.thinking:
+            # temperature has no effect in thinking mode, so only send it otherwise.
+            base["temperature"] = temperature
+
+        # DeepSeek extensions: JSON output, an explicit output budget, and an
+        # explicit thinking-mode switch (the server defaults to enabled).
+        extended: dict[str, Any] = {
+            **base,
+            "response_format": {"type": "json_object"},
+            "max_tokens": self.max_tokens,
+            "extra_body": {"thinking": {"type": "enabled" if self.thinking else "disabled"}},
+        }
+        if self.thinking:
+            extended["reasoning_effort"] = "high"
+
+        last_error: Exception | None = None
+        for kwargs in (extended, base):
+            try:
+                response = self.client.chat.completions.create(**kwargs)
+            except Exception as exc:
+                last_error = exc
+                if kwargs is base or not self._is_param_error(exc):
+                    raise
+                continue
+
+            content = response.choices[0].message.content
+            if not content:
+                raise ValueError("The AI provider returned an empty message.")
+            return content
+
+        raise last_error if last_error else RuntimeError("Chat request failed.")
