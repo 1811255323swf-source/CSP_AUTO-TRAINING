@@ -26,10 +26,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -46,6 +46,10 @@ jobs:
               missing=1
             fi
           done
+          if [ "$CSP_QUESTION_PROVIDER" = "ai" ] && [ -z "$DEEPSEEK_API_KEY" ]; then
+            echo "::error::provider=ai but the DEEPSEEK_API_KEY secret is empty; the run would silently fall back to the local question bank."
+            missing=1
+          fi
           exit "$missing"
 
       - name: Create cloud config
@@ -86,15 +90,44 @@ jobs:
           EOF
 
       - name: Generate PDF and send email
+        shell: bash
         run: |
+          set -o pipefail
           python main.py \
             --config config.cloud.ini \
             --require-email \
-            --allow-static-fallback
+            --allow-static-fallback 2>&1 | tee run.log
+
+      - name: Write run summary
+        if: always()
+        shell: bash
+        run: |
+          source_line=$(grep -m1 'Source:' run.log || true)
+          if echo "$source_line" | grep -q 'Source: ai'; then
+            verdict='✅ 本次题目由 **AI 生成**'
+          elif echo "$source_line" | grep -q 'Source: static'; then
+            verdict='⚠️ 本次使用 **本地题库**（可能发生了回退，请查看下方日志中的 `[ai]` 行）'
+          else
+            verdict='❓ 未找到出题来源记录，请查看下方日志'
+          fi
+          {
+            echo "## CSP 每日训练运行结果"
+            echo ""
+            echo "$verdict"
+            echo ""
+            echo "**产物**：\`$(ls output/ 2>/dev/null | tr '\n' ' ')\`"
+            echo ""
+            echo "<details><summary>完整日志</summary>"
+            echo ""
+            echo '```text'
+            cat run.log 2>/dev/null || echo "（无输出）"
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload generated PDF artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: csp-daily-pdf
           path: output/*.pdf
