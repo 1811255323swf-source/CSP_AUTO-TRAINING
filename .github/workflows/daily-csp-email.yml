@@ -4,10 +4,14 @@ on:
   schedule:
     # GitHub Actions cron uses UTC. 10:00 UTC = 18:00 Asia/Shanghai.
     - cron: "0 10 * * *"
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
   send-daily-csp-pdf:
+    if: github.event_name != 'push' || contains(github.event.head_commit.message, '[send-now]')
     runs-on: ubuntu-latest
     timeout-minutes: 10
 

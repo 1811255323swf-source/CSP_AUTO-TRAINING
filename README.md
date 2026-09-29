@@ -60,6 +60,7 @@ python main.py --config config.ini --dry-run
 
 工作流每天 UTC 10:00（北京时间 18:00）运行，也支持
 **Actions → Daily CSP PDF Email → Run workflow** 手动触发。
+如果需要临时补发，可推送提交信息包含 `[send-now]` 的 commit；普通 push 不会发送邮件。
 运行时会生成 `config.cloud.ini`（已被 git 忽略）并带
 `--require-email --allow-static-fallback`。
 
