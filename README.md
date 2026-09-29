@@ -58,7 +58,9 @@ python main.py --config config.ini --dry-run
 - Secrets：`CSP_SMTP_PASSWORD`、`CSP_SMTP_USER`、`CSP_MAIL_FROM`、`CSP_MAIL_TO`、`DEEPSEEK_API_KEY`
 - Variables（可选）：`CSP_QUESTION_PROVIDER`（`ai` 或 `static`，默认 `ai`）
 
-工作流每天 UTC 10:00（北京时间 18:00）运行，也支持
+工作流每天 UTC 10:03、10:17、10:31、10:45（北京时间 18:03、18:17、18:31、18:45）兜底运行。GitHub Actions 的 `schedule` 不是准点闹钟，可能延迟或偶发跳过；多次触发可以提高当天自动发送成功率。仓库会记录当天已发送标记，后续兜底运行检测到标记后会自动跳过，避免同一天重复发送。
+
+也支持
 **Actions → Daily CSP PDF Email → Run workflow** 手动触发。
 如果需要临时补发，可推送提交信息包含 `[send-now]` 的 commit；普通 push 不会发送邮件。
 运行时会生成 `config.cloud.ini`（已被 git 忽略）并带

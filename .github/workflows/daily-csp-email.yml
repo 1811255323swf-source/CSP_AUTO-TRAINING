@@ -2,12 +2,22 @@ name: Daily CSP PDF Email
 
 on:
   schedule:
-    # GitHub Actions cron uses UTC. 10:00 UTC = 18:00 Asia/Shanghai.
-    - cron: "0 10 * * *"
+    # GitHub Actions cron uses UTC. These retries cover 18:03-18:45 Asia/Shanghai.
+    - cron: "3 10 * * *"
+    - cron: "17 10 * * *"
+    - cron: "31 10 * * *"
+    - cron: "45 10 * * *"
   push:
     branches:
       - main
   workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-csp-pdf-email
+  cancel-in-progress: false
 
 jobs:
   send-daily-csp-pdf:
@@ -31,16 +41,41 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Resolve run mode
+        id: run-mode
+        shell: bash
+        run: |
+          training_date="$(TZ=Asia/Shanghai date +%F)"
+          marker=".github/state/csp-email-sent/${training_date}"
+          should_send="true"
+          reason="ready"
+
+          if [ "${{ github.event_name }}" = "schedule" ] && [ -f "$marker" ]; then
+            should_send="false"
+            reason="already sent for ${training_date}"
+            echo "[schedule] $reason"
+          fi
+
+          echo "training_date=$training_date" >> "$GITHUB_OUTPUT"
+          echo "marker=$marker" >> "$GITHUB_OUTPUT"
+          echo "should_send=$should_send" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
+        if: steps.run-mode.outputs.should_send == 'true'
         uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
       - name: Install dependencies
+        if: steps.run-mode.outputs.should_send == 'true'
         run: python -m pip install -r requirements.txt
 
       - name: Validate required secrets
+        if: steps.run-mode.outputs.should_send == 'true'
         shell: bash
         run: |
           missing=0
@@ -57,6 +92,7 @@ jobs:
           exit "$missing"
 
       - name: Create cloud config
+        if: steps.run-mode.outputs.should_send == 'true'
         shell: bash
         run: |
           cat > config.cloud.ini <<EOF
@@ -94,18 +130,40 @@ jobs:
           EOF
 
       - name: Generate PDF and send email
+        if: steps.run-mode.outputs.should_send == 'true'
         shell: bash
         run: |
           set -o pipefail
           python main.py \
             --config config.cloud.ini \
+            --date "${{ steps.run-mode.outputs.training_date }}" \
             --require-email \
             --allow-static-fallback 2>&1 | tee run.log
+
+      - name: Mark schedule email sent
+        if: success() && github.event_name == 'schedule' && steps.run-mode.outputs.should_send == 'true'
+        shell: bash
+        run: |
+          mkdir -p "$(dirname "${{ steps.run-mode.outputs.marker }}")"
+          {
+            echo "run_id=${{ github.run_id }}"
+            echo "training_date=${{ steps.run-mode.outputs.training_date }}"
+            echo "sent_at=$(TZ=Asia/Shanghai date --iso-8601=seconds)"
+          } > "${{ steps.run-mode.outputs.marker }}"
 
       - name: Write run summary
         if: always()
         shell: bash
         run: |
+          if [ "${{ steps.run-mode.outputs.should_send }}" != "true" ]; then
+            {
+              echo "## CSP 每日训练运行结果"
+              echo ""
+              echo "已跳过：${{ steps.run-mode.outputs.reason }}"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
           source_line=$(grep -m1 'Source:' run.log || true)
           if echo "$source_line" | grep -q 'Source: ai'; then
             verdict='✅ 本次题目由 **AI 生成**'
@@ -128,6 +186,21 @@ jobs:
             echo '```'
             echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit send marker
+        if: success() && github.event_name == 'schedule' && steps.run-mode.outputs.should_send == 'true'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${{ steps.run-mode.outputs.marker }}"
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: mark CSP email sent for ${{ steps.run-mode.outputs.training_date }} [skip ci]"
+            git pull --rebase
+            git push
+          else
+            echo "No send marker changes to commit."
+          fi
 
       - name: Upload generated PDF artifact
         if: always()
