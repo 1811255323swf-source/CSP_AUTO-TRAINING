@@ -53,10 +53,10 @@ jobs:
           should_send="true"
           reason="ready"
 
-          if [ "${{ github.event_name }}" = "schedule" ] && [ -f "$marker" ]; then
+          if [ -f "$marker" ]; then
             should_send="false"
             reason="already sent for ${training_date}"
-            echo "[schedule] $reason"
+            echo "$reason"
           fi
 
           echo "training_date=$training_date" >> "$GITHUB_OUTPUT"
@@ -140,8 +140,8 @@ jobs:
             --require-email \
             --allow-static-fallback 2>&1 | tee run.log
 
-      - name: Mark schedule email sent
-        if: success() && github.event_name == 'schedule' && steps.run-mode.outputs.should_send == 'true'
+      - name: Mark email sent
+        if: success() && steps.run-mode.outputs.should_send == 'true'
         shell: bash
         run: |
           mkdir -p "$(dirname "${{ steps.run-mode.outputs.marker }}")"
@@ -188,7 +188,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Commit send marker
-        if: success() && github.event_name == 'schedule' && steps.run-mode.outputs.should_send == 'true'
+        if: success() && steps.run-mode.outputs.should_send == 'true'
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
