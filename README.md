@@ -58,7 +58,7 @@ python main.py --config config.ini --dry-run
 - Secrets：`CSP_SMTP_PASSWORD`、`CSP_SMTP_USER`、`CSP_MAIL_FROM`、`CSP_MAIL_TO`、`DEEPSEEK_API_KEY`
 - Variables（可选）：`CSP_QUESTION_PROVIDER`（`ai` 或 `static`，默认 `ai`）
 
-工作流每天 UTC 06:05（北京时间 14:05）运行，也支持
+工作流每天 UTC 10:00（北京时间 18:00）运行，也支持
 **Actions → Daily CSP PDF Email → Run workflow** 手动触发。
 运行时会生成 `config.cloud.ini`（已被 git 忽略）并带
 `--require-email --allow-static-fallback`。
